@@ -1324,7 +1324,7 @@ class SiliconLifePlugin(Star):
             yield event.plain_result(f"重写失败：{reason}")
             return
         yield event.plain_result(
-            f"📅 {today_str}\n🌤 天气：{data.weather_summary or '未知'}\n📝 已更新。\n{data.schedule_text}",
+            f"📅 {today_str}\n🌤 天气：{data.weather_summary or '未知'}\n� 今日穿搭：{data.outfit}\n�📝 已更新。\n{data.schedule_text}",
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
