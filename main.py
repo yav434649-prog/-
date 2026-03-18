@@ -620,14 +620,17 @@ class SiliconLifeGenerator:
         }
 
     async def _extract_identity(self, persona_desc: str, umo: str | None) -> str:
-        """从人设描述中提取身份特征"""
         prompt = (
             "请根据以下人设描述，提取出该角色的职业身份或核心生活状态（如：学生、程序员、自由职业者、居家主妇等）。\n"
             "要求：只需输出身份关键词，不要任何解释。如果人设中没有明显身份，请根据性格推断一个最贴合的身份。\n\n"
             f"人设描述：{persona_desc}"
         )
         try:
-            identity = await self._call_llm(prompt, sid="identity_extraction", umo=umo)
+            identity = await self._call_llm(
+                prompt,
+                sid=f"silicon_life_identity_{random.randint(100000, 999999)}",
+                umo=umo,
+            )
             return identity.strip() or "自由职业者"
         except Exception:
             return "自由职业者"
@@ -805,8 +808,7 @@ class SiliconLifeGenerator:
             max_km = float(max_km_raw) if max_km_raw is not None else 0.0
         except (TypeError, ValueError):
             max_km = 0.0
-        
-        # 增加身份和生活逻辑约束
+
         identity = ctx.get("identity", "自由职业者")
         is_holiday = "今天是" in (ctx.get("holiday") or "")
         weekday = ctx.get("weekday", "")
@@ -1069,15 +1071,11 @@ class SiliconLifeGenerator:
             r = routes[idx] if idx < len(routes) else None
             lat = p.location[0] if p and p.location else None
             lng = p.location[1] if p and p.location else None
-            
-            # 判断是否是家
+
             is_home = False
             if p and home_place and p.location and home_place.location:
-                # 距离小于 100 米判定为家
                 if _haversine_km(p.location, home_place.location) < 0.1:
                     is_home = True
-            elif not p: # 如果没有找到地点，暂时假设在原点（即家）
-                is_home = True
 
             item = ScheduleItem(
                 time_window=d.time_window,
@@ -1104,47 +1102,60 @@ class SiliconLifeGenerator:
     def _format_schedule(self, items: list[ScheduleItem], routes: list[RouteInfo | None], privacy: bool) -> str:
         lines: list[str] = []
 
-        for idx, it in enumerate(items):
-            # 格式化地点显示
-            place_display = it.poi_name
+        def parse_time_window(time_window: str) -> tuple[datetime.time | None, datetime.time | None]:
+            m = _TIME_WINDOW_RE.match(time_window or "")
+            if not m:
+                return None, None
+            sh, sm, eh, em = map(int, m.groups())
+            return datetime.time(sh, sm), datetime.time(eh, em)
+
+        def fmt_time(t: datetime.time) -> str:
+            return t.strftime("%H:%M")
+
+        def fmt_activity_place(it: ScheduleItem) -> str:
             if it.is_home:
-                place_display = "[家里]"
-            elif privacy:
-                if it.poi_district:
-                    place_display = f"{it.poi_name}（{it.poi_district}）"
-            else:
-                if it.poi_address:
-                    place_display = f"{it.poi_name}（{it.poi_address}）"
-                elif it.poi_district:
-                    place_display = f"{it.poi_name}（{it.poi_district}）"
+                return "[家里]"
+            name = (it.poi_name or "").strip()
+            return name
 
-            # 提取时间
-            m = _TIME_WINDOW_RE.match(it.time_window or "")
-            start_time = it.time_window
-            if m:
-                sh, sm, eh, em = m.groups()
-                start_time = f"{sh}:{sm}"
-                end_time = f"{eh}:{em}"
+        def fmt_move_from(prev: ScheduleItem | None) -> str:
+            if not prev or prev.is_home:
+                return "家里"
+            return (prev.poi_name or "").strip() or "上一个地点"
 
-            # 处理路程衔接
+        def fmt_move_to(it: ScheduleItem) -> str:
+            if it.is_home:
+                return "回家"
+            name = (it.poi_name or "").strip() or "目的地"
+            address = (it.poi_address or "").strip()
+            district = (it.poi_district or "").strip()
+            extra = address or district
+            return f"{name}（{extra}）" if extra else name
+
+        for idx, it in enumerate(items):
+            start_t, _ = parse_time_window(it.time_window)
+
             r = routes[idx] if idx < len(routes) else None
-            if r and r.ok and r.duration_min is not None and r.duration_min > 0:
-                label = "打车" if r.mode == "taxi" else r.mode
-                dist_km = round((r.distance_m or 0) / 1000.0, 1)
-                
-                # 计算出发时间（开始时间前推路程时间）
-                try:
-                    h, min = map(int, start_time.split(":"))
-                    start_dt = datetime.datetime.combine(datetime.date.today(), datetime.time(h, min))
-                    departure_dt = start_dt - datetime.timedelta(minutes=r.duration_min)
-                    departure_time = departure_dt.strftime("%H:%M")
-                    
-                    lines.append(f"➜ {departure_time} 出发 ({label}约{r.duration_min}分钟 / {dist_km}km)")
-                except Exception:
-                    lines.append(f"➜ 出发 ({label}约{r.duration_min}分钟 / {dist_km}km)")
+            if start_t and r and r.ok and r.duration_min is not None and r.duration_min >= 2:
+                arrive_dt = datetime.datetime.combine(datetime.date.today(), start_t)
+                depart_dt = arrive_dt - datetime.timedelta(minutes=r.duration_min)
+                prev_item = items[idx - 1] if idx > 0 else None
+                from_label = fmt_move_from(prev_item)
+                to_label = fmt_move_to(it)
+                lines.append(f"● {fmt_time(depart_dt.time())}-{fmt_time(arrive_dt.time())} {from_label}➜ {to_label}")
 
-            # 添加日程行
-            lines.append(f"● {it.time_window} {place_display} {it.title}")
+            place_display = fmt_activity_place(it)
+            title = (it.title or "").strip()
+            if it.is_home:
+                lines.append(f"● {it.time_window} {place_display} {title}".strip())
+            else:
+                poi_name = (it.poi_name or "").strip()
+                if poi_name and poi_name in title:
+                    lines.append(f"● {it.time_window} {title}".strip())
+                elif place_display:
+                    lines.append(f"● {it.time_window} {place_display} {title}".strip())
+                else:
+                    lines.append(f"● {it.time_window} {title}".strip())
 
         return "\n".join(lines).strip()
 
