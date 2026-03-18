@@ -1,0 +1,214 @@
+{
+  "virtual_schedule": {
+    "description": "虚拟日程",
+    "type": "object",
+    "items": {
+      "amap_api_key": {
+        "description": "高德开放平台 API Key",
+        "type": "string",
+        "hint": "请前往 https://lbs.amap.com/ 注册并获取 Web 服务 API Key",
+        "obvious_hint": true
+      },
+      "home_base": {
+        "description": "基地/起点（建议填写到商圈/地铁站/小区）",
+        "type": "string",
+        "default": "上海 静安寺"
+      },
+      "home_base_city": {
+        "description": "默认城市（用于 POI/天气/公交路由兜底）",
+        "type": "string",
+        "default": "上海"
+      },
+      "poi_privacy_mode": {
+        "description": "隐私模式（已停用，始终输出详细地址）",
+        "type": "bool",
+        "default": false,
+        "invisible": true
+      },
+      "schedule_time": {
+        "description": "每日生成日程的时间 (HH:MM)",
+        "hint": "格式为 HH:MM。每天的这个时候生成日程",
+        "type": "string",
+        "default": "07:00"
+      },
+      "reference_history_days": {
+        "description": "生成时参考的历史日程天数",
+        "type": "int",
+        "slider": {
+          "min": 0,
+          "max": 7,
+          "step": 1
+        },
+        "default": 3
+      },
+      "reference_recent_count": {
+        "description": "生成时参考的近期会话数量",
+        "hint": "设为 0 时不参考近期会话",
+        "type": "int",
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        },
+        "default": 10
+      },
+      "time_windows": {
+        "description": "时间段模板（每条为 HH:MM-HH:MM）",
+        "type": "list",
+        "default": [
+          "07:30-09:00",
+          "09:30-12:00",
+          "12:00-13:30",
+          "14:00-18:00",
+          "18:30-20:30",
+          "21:00-23:00"
+        ]
+      },
+      "enabled_travel_modes": {
+        "description": "启用的出行方式（按需删减/增补）",
+        "type": "list",
+        "render_type": "checkbox",
+        "options": [
+          "walk",
+          "transit",
+          "drive",
+          "bike",
+          "taxi"
+        ],
+        "labels": [
+          "步行",
+          "公交/地铁",
+          "自驾",
+          "骑行",
+          "打车"
+        ],
+        "default": ["walk", "transit", "drive", "bike", "taxi"]
+      },
+      "default_travel_mode": {
+        "description": "默认出行方式",
+        "type": "string",
+        "options": ["walk", "transit", "drive", "bike", "taxi"],
+        "labels": [
+          "步行",
+          "公交/地铁",
+          "自驾",
+          "骑行",
+          "打车"
+        ],
+        "default": "transit"
+      },
+      "max_travel_minutes_per_leg": {
+        "description": "单段通勤时间上限（分钟）",
+        "type": "int",
+        "slider": {
+          "min": 10,
+          "max": 120,
+          "step": 5
+        },
+        "default": 45
+      },
+      "weather_affect_level": {
+        "description": "天气影响强度",
+        "type": "string",
+        "options": ["low", "medium", "high"],
+        "labels": [
+          "低",
+          "中",
+          "高"
+        ],
+        "default": "medium"
+      },
+      "pool": {
+        "description": "创意池（可在后台自由增删）",
+        "type": "object",
+        "items": {
+          "daily_themes": {
+            "description": "今日主题池",
+            "type": "list",
+            "default": [
+              "探索日",
+              "社交日",
+              "宅家日",
+              "工作日",
+              "自我提升日",
+              "休闲放松日",
+              "创意日",
+              "运动日",
+              "整理日",
+              "美食日",
+              "文艺日",
+              "随性漫游日"
+            ]
+          },
+          "mood_colors": {
+            "description": "心情色彩池",
+            "type": "list",
+            "default": [
+              "慵懒",
+              "活力",
+              "优雅",
+              "俏皮",
+              "神秘",
+              "温柔",
+              "冷艳",
+              "甜美",
+              "知性",
+              "随性",
+              "浪漫",
+              "清新"
+            ]
+          },
+          "outfit_styles": {
+            "description": "穿搭风格池",
+            "type": "list",
+            "default": [
+              "知性学院风",
+              "街头休闲风",
+              "温柔淑女风",
+              "酷飒中性风",
+              "慵懒居家风",
+              "精致约会风",
+              "运动活力风",
+              "日系森女风",
+              "法式优雅风",
+              "韩系甜美风",
+              "复古文艺风",
+              "极简都市风",
+              "甜酷混搭风",
+              "民族风情风",
+              "暗黑系风格"
+            ]
+          },
+          "schedule_types": {
+            "description": "日程类型池",
+            "type": "list",
+            "default": [
+              "户外活动型",
+              "社交聚会型",
+              "独处充电型",
+              "技能学习型",
+              "随性漫游型",
+              "家务整理型",
+              "工作专注型",
+              "休闲娱乐型",
+              "健身运动型",
+              "美食探索型",
+              "文化艺术型",
+              "购物采买型"
+            ]
+          }
+        }
+      },
+      "prompt_template": {
+        "description": "LLM 生成日程的 Prompt 模板",
+        "hint": "支持占位符：{date_str} {weekday} {holiday} {persona_desc} {daily_theme} {mood_color} {outfit_style} {schedule_type} {history_schedules} {recent_chats} {weather_summary} {home_base} {time_windows}",
+        "type": "text",
+        "obvious_hint": true,
+        "editor_mode": true,
+        "editor_language": "markdown",
+        "editor_theme": "vs-dark",
+        "default": "# Role: Silicon Life Scheduler\\n\\n你要为自己生成更真实的「虚拟日程」。输出必须是 JSON 对象本体。\\n\\n## Context\\n- 日期：{date_str} {weekday} {holiday}\\n- 人设：{persona_desc}\\n- 基地/起点：{home_base}\\n- 天气概要：{weather_summary}\\n\\n## 🎲 今日创意约束\\n- 今日主题：【{daily_theme}】\\n- 心情色彩：【{mood_color}】\\n- 穿搭风格（必须严格遵循）：【{outfit_style}】\\n- 日程类型：【{schedule_type}】\\n\\n## 时间段模板（必须逐条对应输出）\\n{time_windows}\\n\\n## 🚫 需要避免的重复内容\\n{history_schedules}\\n\\n## 💡 参考信息\\n{recent_chats}\\n\\n## 强制约束（必须严格遵循）\\n- 你必须只输出 JSON 对象本体（不要 Markdown/代码块/解释）。\\n- JSON 必须包含字段 \\\"outfit_style\\\"，且其值必须严格等于 \\\"{outfit_style}\\\"。\\n- 字段 \\\"outfit\\\" 的第一行必须以 \\\"风格：{outfit_style}\\\" 开头。\\n- 你必须考虑天气：雨天/大风/高温/降温会影响心情、活动选择和随身物品（如雨伞/防晒/保暖等）。\\n- 地点允许具体店面/POI，但请尽量选择真实、常见、可被地图检索到的地点；每段给一个备选地点关键词。\\n\\n## 输出 JSON 结构（严格遵循）\\n{\\n  \\\"outfit_style\\\": \\\"{outfit_style}\\\",\\n  \\\"outfit\\\": \\\"...\\\",\\n  \\\"slots\\\": [\\n    {\\\"time_window\\\": \\\"HH:MM-HH:MM\\\", \\\"title\\\": \\\"...\\\", \\\"poi_query\\\": \\\"具体地点关键词\\\", \\\"poi_query_alt\\\": [\\\"备选1\\\", \\\"备选2\\\"]}\\n  ]\\n}\\n"
+      }
+    }
+  }
+}

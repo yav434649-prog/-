@@ -1,0 +1,27 @@
+# Python / AstrBot plugin ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.idea/
+.vscode/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Temporary
+*.tmp
+*.log
+
+# Plugin data (generated at runtime)
+schedule_data.json
