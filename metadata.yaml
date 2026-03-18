@@ -1,7 +1,7 @@
 name: astrbot_plugin_silicon_life
 display_name: 硅基生命
 desc: "一个目的让ai女友更像真人的插件，赛博恋爱，成为痞老板！"
-version: v1.0.0
+version: v1.0.1
 author: 雅
 repo: "https://github.com/yav434649-prog/-"
 astrbot_version: ">=4.20.1,<5"
