@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import math
 import random
 import re
 import zoneinfo
@@ -70,6 +71,18 @@ def _time_in_window(now: datetime.time, start: datetime.time, end: datetime.time
     if start <= end:
         return start <= now < end
     return now >= start or now < end
+
+
+def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lat1, lon1 = a
+    lat2, lon2 = b
+    r = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lam = math.radians(lon2 - lon1)
+    s = math.sin(d_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lam / 2.0) ** 2
+    return 2.0 * r * math.asin(math.sqrt(s))
 
 
 @dataclass(slots=True)
@@ -491,10 +504,15 @@ class SiliconLifeGenerator:
         weather_summary: str,
         warnings: list[str],
     ) -> tuple[str, list[ScheduleItem]]:
-        places = await self._resolve_places(amap, drafts, city, warnings)
         home_place = await amap.search_place(home_base, city)
         if not home_place:
             warnings.append("home_base_resolve_failed")
+        max_km_raw = self._cfg("max_activity_distance_km", 20)
+        try:
+            max_km = float(max_km_raw) if max_km_raw is not None else 0.0
+        except (TypeError, ValueError):
+            max_km = 0.0
+        places = await self._resolve_places(amap, drafts, city, warnings, home_place=home_place, home_base=home_base, max_km=max_km)
 
         mode = self._choose_travel_mode(
             weather_summary,
@@ -765,6 +783,13 @@ class SiliconLifeGenerator:
             if k not in ctx:
                 ctx[k] = ""
         prompt = re.sub(r"\{(\w+)\}", lambda m: str(ctx.get(m.group(1), "")), tmpl)
+        max_km_raw = self._cfg("max_activity_distance_km", 20)
+        try:
+            max_km = float(max_km_raw) if max_km_raw is not None else 0.0
+        except (TypeError, ValueError):
+            max_km = 0.0
+        if max_km > 0:
+            prompt += f"\n\n## 额外约束\n- 今日活动地点尽量控制在基地 {max_km:g} 公里以内。"
         if extra:
             prompt += f"\n\n【用户补充要求】\n{extra}"
         return prompt
@@ -853,7 +878,8 @@ class SiliconLifeGenerator:
             if model_style != required:
                 return False, f'outfit_style 必须严格等于 "{required}"'
             if not re.match(rf"^\s*(?:风格|【风格】|\[风格\])\s*[:：]\s*{re.escape(required)}(?:\s|$)", outfit):
-                return False, f'outfit 第一行必须以 "风格：{required}" 开头'
+                fixed = f"风格：{required}\n{outfit}"
+                payload["outfit"] = fixed
         slots = payload.get("slots")
         if not isinstance(slots, list) or not slots:
             return False, "slots 不能为空"
@@ -906,18 +932,62 @@ class SiliconLifeGenerator:
             out.sort(key=lambda d: order.get(d.time_window, 10_000))
         return out
 
-    async def _resolve_places(self, amap: AmapClient, drafts: list[SlotDraft], city: str, warnings: list[str]) -> list[Place | None]:
+    async def _resolve_places(
+        self,
+        amap: AmapClient,
+        drafts: list[SlotDraft],
+        city: str,
+        warnings: list[str],
+        *,
+        home_place: Place | None,
+        home_base: str,
+        max_km: float,
+    ) -> list[Place | None]:
         out: list[Place | None] = []
         for d in drafts:
-            place = await amap.search_place(d.poi_query, city)
-            if not place and d.poi_query_alt:
-                for alt in d.poi_query_alt[:3]:
-                    place = await amap.search_place(alt, city)
-                    if place:
-                        break
-            if not place:
+            queries: list[str] = []
+            if d.poi_query:
+                queries.append(d.poi_query)
+            if d.poi_query_alt:
+                queries.extend([q for q in d.poi_query_alt if q])
+            if home_base:
+                queries.extend([f"{home_base} {q}" for q in list(dict.fromkeys(queries))])
+            queries.extend([f"{q} 附近" for q in list(dict.fromkeys(queries))])
+            queries = [q.strip() for q in queries if q.strip()]
+            seen: set[str] = set()
+            filtered_queries: list[str] = []
+            for q in queries:
+                if q in seen:
+                    continue
+                seen.add(q)
+                filtered_queries.append(q)
+
+            best_place: Place | None = None
+            best_km: float | None = None
+            for q in filtered_queries[:8]:
+                place = await amap.search_place(q, city)
+                if not place:
+                    continue
+                if max_km > 0 and home_place and home_place.location and place.location:
+                    km = _haversine_km(home_place.location, place.location)
+                    if best_km is None or km < best_km:
+                        best_km = km
+                        best_place = place
+                        if km <= max_km:
+                            break
+                    continue
+                best_place = place
+                best_km = None
+                break
+
+            if not best_place:
                 warnings.append(f"poi_resolve_failed:{d.poi_query}")
-            out.append(place)
+                out.append(None)
+                continue
+
+            if max_km > 0 and best_km is not None and best_km > max_km:
+                warnings.append(f"poi_distance_over_limit:{best_km:.1f}km:{d.poi_query}")
+            out.append(best_place)
         return out
 
     async def _resolve_routes(
@@ -1165,7 +1235,12 @@ class SiliconLifePlugin(Star):
             yield event.plain_result("已有日程生成任务在进行中，请稍后再试")
             return
         if not data or data.status != "ok":
-            yield event.plain_result("重写失败，请检查插件配置或稍后再试。")
+            reason = ""
+            if data and data.warnings:
+                reason = str(data.warnings[0] or "").strip()
+            if not reason:
+                reason = "未知原因"
+            yield event.plain_result(f"重写失败：{reason}")
             return
         yield event.plain_result(f"📅 {today_str}\n📝 已更新。\n{data.schedule_text}")
 

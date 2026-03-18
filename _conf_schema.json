@@ -107,6 +107,17 @@
         },
         "default": 45
       },
+      "max_activity_distance_km": {
+        "description": "活动距离上限（公里）",
+        "hint": "尽量把活动地点控制在基地附近，超出会尝试改用更近的地点",
+        "type": "int",
+        "slider": {
+          "min": 1,
+          "max": 50,
+          "step": 1
+        },
+        "default": 20
+      },
       "weather_affect_level": {
         "description": "天气影响强度",
         "type": "string",
