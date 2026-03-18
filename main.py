@@ -153,7 +153,7 @@ class ScheduleDataManager:
             return
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             self._data.clear()
             return
         data: dict[str, ScheduleData] = {}
@@ -177,7 +177,7 @@ class ScheduleDataManager:
                         status=item.get("status", "ok"),
                         warnings=item.get("warnings") or [],
                     )
-                except Exception:
+                except (TypeError, ValueError, KeyError):
                     continue
         self._data = data
 
@@ -204,6 +204,36 @@ class AmapClient:
     def __init__(self, api_key: str):
         self.api_key = api_key.strip()
 
+    @staticmethod
+    def _dig(obj: Any, path: list[Any]) -> Any:
+        cur = obj
+        for key in path:
+            if isinstance(key, int):
+                if not isinstance(cur, list) or key < 0 or key >= len(cur):
+                    return None
+                cur = cur[key]
+                continue
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(key)
+        return cur
+
+    @staticmethod
+    def _to_int_maybe(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _parse_duration_distance(cls, node: dict[str, Any]) -> tuple[int | None, int | None]:
+        duration_s = cls._to_int_maybe(node.get("duration"))
+        distance_m = cls._to_int_maybe(node.get("distance"))
+        duration_min = int(round(duration_s / 60.0)) if duration_s is not None else None
+        return duration_min, distance_m
+
     async def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if not self.api_key:
             return None
@@ -216,7 +246,7 @@ class AmapClient:
                         return None
                     data = await resp.json(content_type=None)
                     return data if isinstance(data, dict) else None
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
             return None
 
     async def get_weather_summary(self, city: str) -> str:
@@ -279,7 +309,7 @@ class AmapClient:
                 try:
                     lng = float(lng_s)
                     lat = float(lat_s)
-                except Exception:
+                except (TypeError, ValueError):
                     continue
                 return Place(
                     name=str(tip.get("name") or kw),
@@ -304,7 +334,7 @@ class AmapClient:
                 lng = float(lng_s)
                 lat = float(lat_s)
                 location = (lat, lng)
-            except Exception:
+            except (TypeError, ValueError):
                 location = None
         return Place(
             name=name,
@@ -328,95 +358,35 @@ class AmapClient:
         dest_s = f"{lng_d},{lat_d}"
         mode = (mode or "").strip().lower()
 
+        url = ""
+        params: dict[str, Any] = {}
+        node_path: list[Any] = []
+
         if mode in ("taxi", "drive"):
-            data = await self._get_json(
-                "https://restapi.amap.com/v3/direction/driving",
-                {"origin": origin_s, "destination": dest_s, "strategy": 0},
-            )
-            route = (data or {}).get("route") if isinstance(data, dict) else None
-            paths = (route or {}).get("paths") if isinstance(route, dict) else None
-            path0 = paths[0] if isinstance(paths, list) and paths else None
-            if isinstance(path0, dict):
-                dur = path0.get("duration")
-                dist = path0.get("distance")
-                try:
-                    duration_min = int(round(float(dur) / 60.0))
-                except Exception:
-                    duration_min = None
-                try:
-                    distance_m = int(round(float(dist)))
-                except Exception:
-                    distance_m = None
-                return RouteInfo(mode=mode, duration_min=duration_min, distance_m=distance_m, ok=True)
-            return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="route_not_found")
+            url = "https://restapi.amap.com/v3/direction/driving"
+            params = {"origin": origin_s, "destination": dest_s, "strategy": 0}
+            node_path = ["route", "paths", 0]
+        elif mode == "walk":
+            url = "https://restapi.amap.com/v3/direction/walking"
+            params = {"origin": origin_s, "destination": dest_s}
+            node_path = ["route", "paths", 0]
+        elif mode == "transit":
+            url = "https://restapi.amap.com/v3/direction/transit/integrated"
+            params = {"origin": origin_s, "destination": dest_s, "city": city}
+            node_path = ["route", "transits", 0]
+        elif mode == "bike":
+            url = "https://restapi.amap.com/v4/direction/bicycling"
+            params = {"origin": origin_s, "destination": dest_s}
+            node_path = ["data", "paths", 0]
+        else:
+            return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="unsupported_mode")
 
-        if mode == "walk":
-            data = await self._get_json(
-                "https://restapi.amap.com/v3/direction/walking",
-                {"origin": origin_s, "destination": dest_s},
-            )
-            route = (data or {}).get("route") if isinstance(data, dict) else None
-            paths = (route or {}).get("paths") if isinstance(route, dict) else None
-            path0 = paths[0] if isinstance(paths, list) and paths else None
-            if isinstance(path0, dict):
-                dur = path0.get("duration")
-                dist = path0.get("distance")
-                try:
-                    duration_min = int(round(float(dur) / 60.0))
-                except Exception:
-                    duration_min = None
-                try:
-                    distance_m = int(round(float(dist)))
-                except Exception:
-                    distance_m = None
-                return RouteInfo(mode=mode, duration_min=duration_min, distance_m=distance_m, ok=True)
-            return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="route_not_found")
-
-        if mode == "transit":
-            data = await self._get_json(
-                "https://restapi.amap.com/v3/direction/transit/integrated",
-                {"origin": origin_s, "destination": dest_s, "city": city},
-            )
-            route = (data or {}).get("route") if isinstance(data, dict) else None
-            transits = (route or {}).get("transits") if isinstance(route, dict) else None
-            t0 = transits[0] if isinstance(transits, list) and transits else None
-            if isinstance(t0, dict):
-                dur = t0.get("duration")
-                dist = t0.get("distance")
-                try:
-                    duration_min = int(round(float(dur) / 60.0))
-                except Exception:
-                    duration_min = None
-                try:
-                    distance_m = int(round(float(dist)))
-                except Exception:
-                    distance_m = None
-                return RouteInfo(mode=mode, duration_min=duration_min, distance_m=distance_m, ok=True)
-            return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="route_not_found")
-
-        if mode == "bike":
-            data = await self._get_json(
-                "https://restapi.amap.com/v4/direction/bicycling",
-                {"origin": origin_s, "destination": dest_s},
-            )
-            d = (data or {}).get("data") if isinstance(data, dict) else None
-            paths = (d or {}).get("paths") if isinstance(d, dict) else None
-            p0 = paths[0] if isinstance(paths, list) and paths else None
-            if isinstance(p0, dict):
-                dur = p0.get("duration")
-                dist = p0.get("distance")
-                try:
-                    duration_min = int(round(float(dur) / 60.0))
-                except Exception:
-                    duration_min = None
-                try:
-                    distance_m = int(round(float(dist)))
-                except Exception:
-                    distance_m = None
-                return RouteInfo(mode=mode, duration_min=duration_min, distance_m=distance_m, ok=True)
-            return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="route_not_found")
-
-        return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="unsupported_mode")
+        data = await self._get_json(url, params)
+        node = self._dig(data, node_path)
+        if isinstance(node, dict):
+            duration_min, distance_m = self._parse_duration_distance(node)
+            return RouteInfo(mode=mode, duration_min=duration_min, distance_m=distance_m, ok=True)
+        return RouteInfo(mode=mode, duration_min=None, distance_m=None, ok=False, reason="route_not_found")
 
 
 class LifeScheduler:
@@ -487,6 +457,55 @@ class SiliconLifeGenerator:
             return vs.get(key, default)
         return self.config.get(key, default)
 
+    def _get_location_config(self) -> tuple[str, str, str]:
+        api_key = str(self._cfg("amap_api_key", "")).strip()
+        if not api_key:
+            raise RuntimeError("amap_api_key_missing")
+        city = str(self._cfg("home_base_city", "")).strip() or "上海"
+        home_base = str(self._cfg("home_base", "")).strip() or city
+        return api_key, city, home_base
+
+    async def _generate_payload(self, *, prompt: str, ctx: dict[str, Any], sid_base: str, umo: str | None) -> dict[str, Any]:
+        content = await self._call_llm(prompt, sid=f"{sid_base}_0", umo=umo)
+        payload = self._extract_json_obj(content)
+        ok, reason = self._validate_payload(payload, ctx)
+        for attempt in range(1, self._STYLE_ENFORCE_RETRIES + 1):
+            if ok:
+                break
+            repair_prompt = self._build_repair_prompt(ctx, content, reason)
+            content = await self._call_llm(repair_prompt, sid=f"{sid_base}_{attempt}", umo=umo)
+            payload = self._extract_json_obj(content)
+            ok, reason = self._validate_payload(payload, ctx)
+        if not ok or not payload:
+            raise ValueError(reason or "invalid_payload")
+        return payload
+
+    async def _build_schedule_output(
+        self,
+        *,
+        amap: AmapClient,
+        drafts: list[SlotDraft],
+        city: str,
+        home_base: str,
+        ctx: dict[str, Any],
+        weather_summary: str,
+        warnings: list[str],
+    ) -> tuple[str, list[ScheduleItem]]:
+        places = await self._resolve_places(amap, drafts, city, warnings)
+        home_place = await amap.search_place(home_base, city)
+        if not home_place:
+            warnings.append("home_base_resolve_failed")
+
+        mode = self._choose_travel_mode(
+            weather_summary,
+            persona_desc=str(ctx.get("persona_desc") or ""),
+            schedule_type=str(ctx.get("schedule_type") or ""),
+        )
+        routes = await self._resolve_routes(amap, home_place, places, mode, city, warnings)
+        items = self._build_items(drafts, places, routes, warnings)
+        schedule_text = self._format_schedule(items, routes, False)
+        return schedule_text, items
+
     async def generate_schedule(
         self,
         date: datetime.datetime | None = None,
@@ -502,11 +521,7 @@ class SiliconLifeGenerator:
         date_key = date.strftime("%Y-%m-%d")
         warnings: list[str] = []
         try:
-            api_key = str(self._cfg("amap_api_key", "")).strip()
-            if not api_key:
-                raise RuntimeError("amap_api_key_missing")
-            city = str(self._cfg("home_base_city", "")).strip() or "上海"
-            home_base = str(self._cfg("home_base", "")).strip() or city
+            api_key, city, home_base = self._get_location_config()
 
             amap = AmapClient(api_key)
             weather_summary = await amap.get_weather_summary(city)
@@ -514,37 +529,21 @@ class SiliconLifeGenerator:
             ctx = await self._collect_context(date, umo, weather_summary, home_base)
             prompt = self._build_prompt(ctx, extra)
             sid_base = f"silicon_life_gen_{date_key}"
-            content = await self._call_llm(prompt, sid=f"{sid_base}_0", umo=umo)
-            payload = self._extract_json_obj(content)
-            ok, reason = self._validate_payload(payload, ctx)
-            for attempt in range(1, self._STYLE_ENFORCE_RETRIES + 1):
-                if ok:
-                    break
-                repair_prompt = self._build_repair_prompt(ctx, content, reason)
-                content = await self._call_llm(repair_prompt, sid=f"{sid_base}_{attempt}", umo=umo)
-                payload = self._extract_json_obj(content)
-                ok, reason = self._validate_payload(payload, ctx)
-            if not ok or not payload:
-                raise ValueError(reason or "invalid_payload")
+            payload = await self._generate_payload(prompt=prompt, ctx=ctx, sid_base=sid_base, umo=umo)
 
             drafts = self._extract_slots(payload, ctx["time_windows"])
             if not drafts:
                 raise ValueError("slots_empty")
 
-            places = await self._resolve_places(amap, drafts, city, warnings)
-            home_place = await amap.search_place(home_base, city)
-            if not home_place:
-                warnings.append("home_base_resolve_failed")
-
-            mode = self._choose_travel_mode(
-                weather_summary,
-                persona_desc=str(ctx.get("persona_desc") or ""),
-                schedule_type=str(ctx.get("schedule_type") or ""),
+            schedule_text, items = await self._build_schedule_output(
+                amap=amap,
+                drafts=drafts,
+                city=city,
+                home_base=home_base,
+                ctx=ctx,
+                weather_summary=weather_summary,
+                warnings=warnings,
             )
-            routes = await self._resolve_routes(amap, home_place, places, mode, city, warnings)
-            items = self._build_items(drafts, places, routes, warnings)
-
-            schedule_text = self._format_schedule(items, routes, False)
 
             data = ScheduleData(
                 date=date_key,
@@ -558,6 +557,8 @@ class SiliconLifeGenerator:
             )
             self.data_mgr.set(data)
             return data
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"硅基生命日程生成失败: {e}")
             data = ScheduleData(
@@ -609,16 +610,18 @@ class SiliconLifeGenerator:
             holiday_name = cn_holidays.get(date)
             if holiday_name:
                 return f"今天是 {holiday_name}"
-        except Exception:
+        except ImportError:
+            return ""
+        except (TypeError, ValueError, KeyError, AttributeError):
             return ""
         return ""
 
     def _pick_diversity(self, today: datetime.date, weather_summary: str) -> dict[str, Any]:
         pool = self._cfg("pool") or {}
-        daily_themes = _normalize_list((pool or {}).get("daily_themes"))
-        mood_colors = _normalize_list((pool or {}).get("mood_colors"))
-        outfit_styles = _normalize_list((pool or {}).get("outfit_styles"))
-        schedule_types = _normalize_list((pool or {}).get("schedule_types"))
+        daily_themes = _normalize_list(pool.get("daily_themes"))
+        mood_colors = _normalize_list(pool.get("mood_colors"))
+        outfit_styles = _normalize_list(pool.get("outfit_styles"))
+        schedule_types = _normalize_list(pool.get("schedule_types"))
 
         mood = random.choice(mood_colors) if mood_colors else ""
         if weather_summary and any(k in weather_summary for k in ["雨", "雪", "雷", "暴"]):
@@ -741,14 +744,18 @@ class SiliconLifeGenerator:
                 elif role == "assistant":
                     formatted.append(f"我: {content}")
             return "\n".join(formatted) if formatted else "无最近对话记录"
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError, AttributeError):
             return "获取对话记录失败"
 
     async def _get_persona(self) -> str:
         try:
             p = await self.context.persona_manager.get_default_persona_v3()
             return p.get("prompt") if isinstance(p, dict) else getattr(p, "prompt", "")
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except (TypeError, ValueError, KeyError, AttributeError):
             return "你是一个热爱生活、情感细腻的AI伙伴。"
 
     def _build_prompt(self, ctx: dict[str, Any], extra: str | None) -> str:
@@ -783,6 +790,8 @@ class SiliconLifeGenerator:
             cid = await self.context.conversation_manager.get_curr_conversation_id(sid)
             if cid:
                 await self.context.conversation_manager.delete_conversation(sid, cid)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             pass
 
@@ -803,34 +812,33 @@ class SiliconLifeGenerator:
         text = re.sub(r"^```json\s*", "", text, flags=re.MULTILINE)
         text = re.sub(r"^```\s*", "", text, flags=re.MULTILINE)
         text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
-        start = text.find("{")
-        if start == -1:
-            return None
-        brace = 0
-        in_string = False
-        escape = False
-        for i, ch in enumerate(text[start:], start=start):
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-            else:
-                if ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    brace += 1
-                elif ch == "}":
-                    brace -= 1
-                    if brace == 0:
-                        s = text[start : i + 1]
-                        try:
-                            data = json.loads(s)
+        starts = [m.start() for m in re.finditer(r"\{", text)]
+        for start in starts:
+            brace = 0
+            in_string = False
+            escape = False
+            for i, ch in enumerate(text[start:], start=start):
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                else:
+                    if ch == '"':
+                        in_string = True
+                    elif ch == "{":
+                        brace += 1
+                    elif ch == "}":
+                        brace -= 1
+                        if brace == 0:
+                            s = text[start : i + 1]
+                            try:
+                                data = json.loads(s)
+                            except json.JSONDecodeError:
+                                break
                             return data if isinstance(data, dict) else None
-                        except Exception:
-                            return None
         return None
 
     def _validate_payload(self, payload: dict[str, Any] | None, ctx: dict[str, Any]) -> tuple[bool, str]:
