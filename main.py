@@ -123,6 +123,7 @@ class ScheduleItem:
     poi_address: str
     lat: float | None
     lng: float | None
+    is_home: bool = False
     travel_mode_from_prev: str | None = None
     travel_minutes_from_prev: int | None = None
     travel_distance_m_from_prev: int | None = None
@@ -520,7 +521,7 @@ class SiliconLifeGenerator:
             schedule_type=str(ctx.get("schedule_type") or ""),
         )
         routes = await self._resolve_routes(amap, home_place, places, mode, city, warnings)
-        items = self._build_items(drafts, places, routes, warnings)
+        items = self._build_items(drafts, places, routes, warnings, home_place=home_place)
         schedule_text = self._format_schedule(items, routes, False)
         return schedule_text, items
 
@@ -602,11 +603,14 @@ class SiliconLifeGenerator:
         weather_summary: str,
         home_base: str,
     ) -> dict[str, Any]:
+        persona_desc = await self._get_persona()
+        identity = await self._extract_identity(persona_desc, umo)
         return {
             "date_str": date.strftime("%Y年%m月%d日"),
             "weekday": ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][date.weekday()],
             "holiday": self._get_holiday_info(date.date()),
-            "persona_desc": await self._get_persona(),
+            "persona_desc": persona_desc,
+            "identity": identity,
             "history_schedules": self._get_history(date.date()),
             "recent_chats": await self._get_recent_chats(umo),
             "weather_summary": weather_summary or "未知",
@@ -614,6 +618,19 @@ class SiliconLifeGenerator:
             "time_windows": self._time_windows_text(),
             **self._pick_diversity(date.date(), weather_summary),
         }
+
+    async def _extract_identity(self, persona_desc: str, umo: str | None) -> str:
+        """从人设描述中提取身份特征"""
+        prompt = (
+            "请根据以下人设描述，提取出该角色的职业身份或核心生活状态（如：学生、程序员、自由职业者、居家主妇等）。\n"
+            "要求：只需输出身份关键词，不要任何解释。如果人设中没有明显身份，请根据性格推断一个最贴合的身份。\n\n"
+            f"人设描述：{persona_desc}"
+        )
+        try:
+            identity = await self._call_llm(prompt, sid="identity_extraction", umo=umo)
+            return identity.strip() or "自由职业者"
+        except Exception:
+            return "自由职业者"
 
     def _time_windows_text(self) -> str:
         windows = _normalize_list(self._cfg("time_windows"))
@@ -788,8 +805,23 @@ class SiliconLifeGenerator:
             max_km = float(max_km_raw) if max_km_raw is not None else 0.0
         except (TypeError, ValueError):
             max_km = 0.0
+        
+        # 增加身份和生活逻辑约束
+        identity = ctx.get("identity", "自由职业者")
+        is_holiday = "今天是" in (ctx.get("holiday") or "")
+        weekday = ctx.get("weekday", "")
+        is_weekend = weekday in ["星期六", "星期日"]
+        
+        prompt += f"\n\n## 身份与生活逻辑约束\n- 你的核心身份是：{identity}。\n"
+        if not is_holiday and not is_weekend:
+            prompt += f"- 今天是{weekday}（工作日），作为{identity}，你的日程应以该身份的核心活动为主。减少不必要的、跨度大的外出。\n"
+        else:
+            prompt += f"- 今天是{ctx.get('holiday') or '周末'}，你可以安排更丰富多样的活动，但也请根据你的心情（{ctx.get('mood_color')}）来决定是否外出。\n"
+        
+        prompt += "- 允许并在日程中适当加入“留白”或“变数”（如：独自发呆、整理思绪、享受午后阳光等），让生活更有真实感。\n"
+        
         if max_km > 0:
-            prompt += f"\n\n## 额外约束\n- 今日活动地点尽量控制在基地 {max_km:g} 公里以内。"
+            prompt += f"- 今日活动地点尽量控制在基地 {max_km:g} 公里以内。"
         if extra:
             prompt += f"\n\n【用户补充要求】\n{extra}"
         return prompt
@@ -888,6 +920,7 @@ class SiliconLifeGenerator:
     def _build_repair_prompt(self, ctx: dict[str, Any], bad_text: str, reason: str) -> str:
         required = str(ctx.get("outfit_style") or "").strip()
         time_windows = str(ctx.get("time_windows") or "")
+        identity = ctx.get("identity", "自由职业者")
         return (
             "你之前的输出未通过校验，需要按要求重写。\n"
             f"校验原因：{reason}\n\n"
@@ -895,7 +928,9 @@ class SiliconLifeGenerator:
             "输出 JSON 必须包含字段：outfit_style、outfit、slots。\n"
             f'其中 outfit_style 必须严格等于 "{required}"；outfit 第一行必须以 "风格：{required}" 开头。\n'
             "slots 必须是数组，每一项必须包含 time_window/title/poi_query/poi_query_alt。\n"
+            f"你的身份是：{identity}，请确保日程符合该身份的生活逻辑。\n"
             f"时间段模板如下（必须逐条对应）：\n{time_windows}\n\n"
+            "允许并在日程中适当加入“留白”或“变数”（如：独自发呆、享受午后阳光等）。\n"
             "你之前的输出（供参考，可能不合规）：\n"
             f"{bad_text}\n"
         )
@@ -1026,6 +1061,7 @@ class SiliconLifeGenerator:
         places: list[Place | None],
         routes: list[RouteInfo | None],
         warnings: list[str],
+        home_place: Place | None = None,
     ) -> list[ScheduleItem]:
         items: list[ScheduleItem] = []
         for idx, d in enumerate(drafts):
@@ -1033,6 +1069,16 @@ class SiliconLifeGenerator:
             r = routes[idx] if idx < len(routes) else None
             lat = p.location[0] if p and p.location else None
             lng = p.location[1] if p and p.location else None
+            
+            # 判断是否是家
+            is_home = False
+            if p and home_place and p.location and home_place.location:
+                # 距离小于 100 米判定为家
+                if _haversine_km(p.location, home_place.location) < 0.1:
+                    is_home = True
+            elif not p: # 如果没有找到地点，暂时假设在原点（即家）
+                is_home = True
+
             item = ScheduleItem(
                 time_window=d.time_window,
                 title=d.title,
@@ -1043,6 +1089,7 @@ class SiliconLifeGenerator:
                 poi_address=(p.address if p else ""),
                 lat=lat,
                 lng=lng,
+                is_home=is_home,
             )
             if r:
                 item.travel_mode_from_prev = r.mode
@@ -1056,26 +1103,49 @@ class SiliconLifeGenerator:
 
     def _format_schedule(self, items: list[ScheduleItem], routes: list[RouteInfo | None], privacy: bool) -> str:
         lines: list[str] = []
+
         for idx, it in enumerate(items):
-            place = it.poi_name
-            if privacy:
+            # 格式化地点显示
+            place_display = it.poi_name
+            if it.is_home:
+                place_display = "[家里]"
+            elif privacy:
                 if it.poi_district:
-                    place = f"{it.poi_name}（{it.poi_district}）"
+                    place_display = f"{it.poi_name}（{it.poi_district}）"
             else:
                 if it.poi_address:
-                    place = f"{it.poi_name}（{it.poi_address}）"
+                    place_display = f"{it.poi_name}（{it.poi_address}）"
                 elif it.poi_district:
-                    place = f"{it.poi_name}（{it.poi_district}）"
-            lines.append(f"{it.time_window} {it.title} - {place}")
+                    place_display = f"{it.poi_name}（{it.poi_district}）"
+
+            # 提取时间
+            m = _TIME_WINDOW_RE.match(it.time_window or "")
+            start_time = it.time_window
+            if m:
+                sh, sm, eh, em = m.groups()
+                start_time = f"{sh}:{sm}"
+                end_time = f"{eh}:{em}"
+
+            # 处理路程衔接
             r = routes[idx] if idx < len(routes) else None
-            if r and r.duration_min is not None:
+            if r and r.ok and r.duration_min is not None and r.duration_min > 0:
                 label = "打车" if r.mode == "taxi" else r.mode
-                dist = f" / {round((r.distance_m or 0) / 1000.0, 1)}km" if r.distance_m else ""
-                lines.append(f"路程：{label} 约{r.duration_min}分钟{dist}")
-            elif idx == 0:
-                lines.append("路程：未知（起点或地点未能定位，已降级）")
-            else:
-                lines.append("路程：未知（地点或路线未能获取，已降级）")
+                dist_km = round((r.distance_m or 0) / 1000.0, 1)
+                
+                # 计算出发时间（开始时间前推路程时间）
+                try:
+                    h, min = map(int, start_time.split(":"))
+                    start_dt = datetime.datetime.combine(datetime.date.today(), datetime.time(h, min))
+                    departure_dt = start_dt - datetime.timedelta(minutes=r.duration_min)
+                    departure_time = departure_dt.strftime("%H:%M")
+                    
+                    lines.append(f"➜ {departure_time} 出发 ({label}约{r.duration_min}分钟 / {dist_km}km)")
+                except Exception:
+                    lines.append(f"➜ 出发 ({label}约{r.duration_min}分钟 / {dist_km}km)")
+
+            # 添加日程行
+            lines.append(f"● {it.time_window} {place_display} {it.title}")
+
         return "\n".join(lines).strip()
 
 
